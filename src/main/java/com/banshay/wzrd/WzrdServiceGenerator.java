@@ -49,7 +49,7 @@ public class WzrdServiceGenerator extends AbstractProcessor {
   private final String methodTemplate =
       """
               public reactor.core.publisher.Mono<%3$s> %1$s(%2$s) {
-                var executed = %1sValue.execute(%4$s);
+                var executed = %1sValue.invokeMember("main", %4$s);
                 if(executed.isMetaObject()){
                   return reactor.core.publisher.Mono.just(executed.as(%3$s.class));
                 }
