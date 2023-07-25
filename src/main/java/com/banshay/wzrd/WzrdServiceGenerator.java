@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.Filer;
 import javax.annotation.processing.Processor;
@@ -20,6 +21,7 @@ import javax.lang.model.SourceVersion;
 import javax.lang.model.element.TypeElement;
 import javax.tools.Diagnostic.Kind;
 import javax.tools.JavaFileObject;
+import org.graalvm.collections.Pair;
 
 @SupportedAnnotationTypes("com.banshay.wzrd.WzrdEnabled")
 @SupportedSourceVersion(SourceVersion.RELEASE_17)
@@ -36,7 +38,7 @@ public class WzrdServiceGenerator extends AbstractProcessor {
    */
   private final String initializationTemplate =
       """
-                var %1$sSource = Source.newBuilder("ruby", new java.io.File("%2$s")).build();
+                var %1$sSource = Source.newBuilder("ruby", new java.io.BufferedReader(new java.io.InputStreamReader(getClass().getClassLoader().getResourceAsStream("%2$s"))), "%2$s").build();
                 %1$sValue = context.eval(%1$sSource);
           """;
 
@@ -45,17 +47,16 @@ public class WzrdServiceGenerator extends AbstractProcessor {
    * @param 2 - arguments with type
    * @param 3 - returnType
    * @param 4 - arguments with no type
+   * @param 5 - type no generics
    */
   private final String methodTemplate =
       """
-              public reactor.core.publisher.Mono<%3$s> %1$s(%2$s) {
-                var executed = %1sValue.invokeMember("main", %4$s);
-                if(executed.isMetaObject()){
-                  return reactor.core.publisher.Mono.just(executed.as(%3$s.class));
-                }
-                return reactor.core.publisher.Mono.empty();
-              }
-          """;
+                        public %3$s %1$s(%2$s) {
+                          var member = %1$sValue.getMember("%1$s");
+                          var executed = member.execute(%4$s);
+                          return executed.as(%5$s.class);
+                        }
+                    """;
 
   /**
    * @param 1 - value definitions
@@ -104,9 +105,9 @@ public class WzrdServiceGenerator extends AbstractProcessor {
         messager.printMessage(Kind.NOTE, sourcePath.getPath());
 
         var path = Path.of(sourcePath);
-        var target = path.getParent().getParent().getParent().getParent();
+        var target = path.getParent().getParent().getParent();
 
-        messager.printMessage(Kind.NOTE, target.toString());
+        messager.printMessage(Kind.NOTE, "target directory: %s".formatted(target.toString()));
 
         var pathMatcher = FileSystems.getDefault().getPathMatcher("glob:**.wzrd");
 
@@ -116,20 +117,35 @@ public class WzrdServiceGenerator extends AbstractProcessor {
                 .map(
                     file -> {
                       var returnType = "Object";
+                      var inputs = List.<Pair<String, String>>of();
                       try {
+                        var fileContent = Objects.requireNonNullElseGet(
+                            Files.readAllLines(file), List::<String>of);
                         returnType =
-                            Objects.requireNonNullElseGet(
-                                    Files.readAllLines(file), List::<String>of)
+                            fileContent
                                 .stream()
                                 .filter(line -> line.startsWith("#returns "))
                                 .map(line -> line.split("#returns ")[1])
                                 .findFirst()
                                 .orElse("Object");
+                        inputs = fileContent.stream()
+                            .filter(line -> line.startsWith("#inputs "))
+                            .map(line -> {
+                              var unparsedInputs = line.split("#inputs ")[1];
+                              if (unparsedInputs != null && !unparsedInputs.isEmpty()) {
+                                return Stream.of(unparsedInputs.split(","))
+                                    .map(input -> Pair.create(input.split(":")[1], input.split(":")[0]))
+                                    .toList();
+                              }
+                              return List.<Pair<String, String>>of();
+                            }).findFirst().orElse(List.of());
                       } catch (IOException ignored) {
                       }
                       var filename = file.getFileName().toString().split(".wzrd")[0];
+
                       return new WzrdRule(
-                          uncapitalize(filename), file.toAbsolutePath().toString(), returnType);
+                          uncapitalize(filename), "wzrd/%s".formatted(file.getFileName().toString()), returnType,
+                          inputs);
                     })
                 .peek(
                     rule ->
@@ -151,10 +167,12 @@ public class WzrdServiceGenerator extends AbstractProcessor {
                     .collect(Collectors.joining(System.lineSeparator())),
                 functions.stream()
                     .map(
-                        rule -> {
-                          return methodTemplate.formatted(
-                              rule.filename(), "Integer input", rule.returnType(), "input");
-                        })
+                        rule -> methodTemplate.formatted(
+                            rule.filename(),
+                            rule.inputs().stream().map(pair -> pair.getLeft() + " " + pair.getRight())
+                                .collect(Collectors.joining(", ")), rule.returnType(),
+                            rule.inputs().stream().map(Pair::getRight).collect(
+                                Collectors.joining(", ")), rule.returnType().replaceAll("<.*>", "")))
                     .collect(Collectors.joining(System.lineSeparator()))));
         serviceWriter.close();
       } catch (IOException e) {
@@ -191,5 +209,7 @@ public class WzrdServiceGenerator extends AbstractProcessor {
     }
   }
 
-  private record WzrdRule(String filename, String path, String returnType) {}
+  private record WzrdRule(String filename, String path, String returnType, List<Pair<String, String>> inputs) {
+
+  }
 }

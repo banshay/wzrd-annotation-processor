@@ -6,7 +6,7 @@
 
     <groupId>com.banshay</groupId>
     <artifactId>wzrd-annotation-processor</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
+    <version>0.0.2-SNAPSHOT</version>
 
     <properties>
         <auto-service.version>1.1.0</auto-service.version>
